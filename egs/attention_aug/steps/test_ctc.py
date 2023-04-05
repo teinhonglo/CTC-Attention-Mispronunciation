@@ -53,10 +53,10 @@ def test():
     vocab_file = opts.vocab_file
     
     vocab = Vocab(vocab_file)
-    test_dataset = SpeechDataset(vocab, opts.test_scp_path, opts.test_lab_path, opts)
+    test_dataset = SpeechDataset(vocab, opts.test_wavscp_path, opts.test_scp_path, opts.test_lab_path, opts)
     test_loader = SpeechDataLoader(test_dataset, batch_size=opts.batch_size, shuffle=False, num_workers=opts.num_workers, pin_memory=False)
     
-    model = CTC_Model(rnn_param=rnn_param, add_cnn=add_cnn, cnn_param=cnn_param, num_class=num_class, drop_out=drop_out)
+    model = CTC_Model(rnn_param=rnn_param, add_cnn=add_cnn, cnn_param=cnn_param, num_class=num_class, drop_out=drop_out, , opts=opts)
     model.to(device)
     model.load_state_dict(package['state_dict'])
     model.eval()

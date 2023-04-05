@@ -13,9 +13,10 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import f1_score
 import matplotlib.pyplot as plt
-from scikitplot.metrics import plot_confusion_matrix, plot_roc
+# from scikitplot.metrics import plot_confusion_matrix, plot_roc
 sys.path.append('./')
 from models.model_ctc import *
+from losses.losses import *
 #from warpctc_pytorch import CTCLoss # use built-in nn.CTCLoss
 from utils.data_loader import Vocab, SpeechDataset, SpeechDataLoader
 
@@ -35,10 +36,7 @@ def run_epoch(epoch_id, model, data_iter, loss_fn, device, optimizer=None, print
     total_tokens = 0
     total_errs = 0
     cur_loss = 0
-    
-    
-    
-    
+        
     for i, data in enumerate(data_iter):
         inputs, input_sizes, targets, target_sizes,trans,trans_sizes, utt_list = data
         
@@ -48,21 +46,19 @@ def run_epoch(epoch_id, model, data_iter, loss_fn, device, optimizer=None, print
         target_sizes = target_sizes.to(device)
         trans = trans.to(device)
         trans_sizes = trans_sizes.to(device)
-
-  
-       
+   
         out = model(inputs,trans)
         
         out_len, batch_size, _ = out.size()
         
         input_sizes = (input_sizes * out_len).long()
-        loss = loss_fn(out, targets, input_sizes, target_sizes)
+        loss = loss_fn(out, targets, trans, input_sizes, target_sizes, trans_sizes)
         loss /= batch_size
         cur_loss += loss.item()
         total_loss += loss.item()
         prob, index = torch.max(out, dim=-1)
         
-        batch_errs, batch_tokens= model.compute_wer(index.transpose(0,1).cpu().numpy(), input_sizes.cpu().numpy(), targets.cpu().numpy(), target_sizes.cpu().numpy())
+        batch_errs, batch_tokens = model.compute_wer(index.transpose(0,1).cpu().numpy(), input_sizes.cpu().numpy(), targets.cpu().numpy(), target_sizes.cpu().numpy())
         
         # print('targets:', targets.shape)
         # print('pred:', np.asarray(pred).shape)
@@ -79,9 +75,7 @@ def run_epoch(epoch_id, model, data_iter, loss_fn, device, optimizer=None, print
             loss.backward()
             #nn.utils.clip_grad_norm_(model.parameters(), 400)
             optimizer.step()
-    
-    
-    
+
     average_loss = total_loss / (i+1)
     training = "Train" if is_training else "Valid"
     print("Epoch %d %s done, total_loss: %.4f, total_wer: %.4f" % (epoch_id, training, average_loss, total_errs / total_tokens))
@@ -90,6 +84,9 @@ def run_epoch(epoch_id, model, data_iter, loss_fn, device, optimizer=None, print
 class Config(object):
     batch_size = 4
     dropout = 0.1
+    loss = "CTCLoss"
+    use_focal_loss = False
+    pretrained_model = None
 
 def main(conf):
     opts = Config()
@@ -103,10 +100,10 @@ def main(conf):
     if opts.use_gpu:
         torch.cuda.manual_seed(opts.seed)
     
-    #Data Loader
+    # Data Loader
     vocab = Vocab(opts.vocab_file)
-    train_dataset = SpeechDataset(vocab, opts.train_scp_path, opts.train_lab_path,opts.train_trans_path, opts, True)
-    dev_dataset = SpeechDataset(vocab, opts.valid_scp_path, opts.valid_lab_path, opts.valid_trans_path, opts)
+    train_dataset = SpeechDataset(vocab, opts.train_wavscp_path, opts.train_scp_path, opts.train_lab_path,opts.train_trans_path, opts, True)
+    dev_dataset = SpeechDataset(vocab, opts.valid_wavscp_path, opts.valid_scp_path, opts.valid_lab_path, opts.valid_trans_path, opts)
     train_loader = SpeechDataLoader(train_dataset, batch_size=opts.batch_size, shuffle=opts.shuffle_train, num_workers=opts.num_workers)
     dev_loader = SpeechDataLoader(dev_dataset, batch_size=opts.batch_size, shuffle=False, num_workers=opts.num_workers)
 
@@ -119,27 +116,55 @@ def main(conf):
     opts.output_class_dim = vocab.n_words
     drop_out = opts.drop_out
     add_cnn = opts.add_cnn
-    
-    cnn_param = {}
-    channel = eval(opts.channel)
-    kernel_size = eval(opts.kernel_size)
-    stride = eval(opts.stride)
-    padding = eval(opts.padding)
-    pooling = eval(opts.pooling)
-    activation_function = supported_activate[opts.activation_function]
-    cnn_param['batch_norm'] = opts.batch_norm
-    cnn_param['activate_function'] = activation_function
-    cnn_param["layer"] = []
-    for layer in range(opts.layers):
-        layer_param = [channel[layer], kernel_size[layer], stride[layer], padding[layer]]
-        if pooling is not None:
-            layer_param.append(pooling[layer])
-        else:
-            layer_param.append(None)
-        cnn_param["layer"].append(layer_param)
 
-    model = CTC_Model(add_cnn=add_cnn, cnn_param=cnn_param, rnn_param=rnn_param, num_class=num_class, drop_out=drop_out)
-    model = model.to(device)
+    if opts.pretrained_model is not None:
+        print("Use pretrained model", opts.pretrained_model)
+        model_path = os.path.join(opts.pretrained_model)
+        package = torch.load(model_path)
+    
+        rnn_param = package["rnn_param"]
+        add_cnn = package["add_cnn"]
+        cnn_param = package["cnn_param"]
+        num_class = package["num_class"]
+        feature_type = package['epoch']['feature_type']
+        n_feats = package['epoch']['n_feats']
+        drop_out = package['_drop_out']
+        mel = opts.mel
+
+        beam_width = opts.beam_width
+        lm_alpha = opts.lm_alpha
+        decoder_type =  opts.decode_type
+        vocab_file = opts.vocab_file
+    
+        vocab = Vocab(vocab_file)
+
+        model = CTC_Model(rnn_param=rnn_param, add_cnn=add_cnn, cnn_param=cnn_param, num_class=num_class, drop_out=drop_out, opts=opts)
+        model.to(device)
+        model.load_state_dict(package['state_dict'])
+    else:
+        print("Training from scratch")
+        cnn_param = {}
+        channel = eval(opts.channel)
+        kernel_size = eval(opts.kernel_size)
+        stride = eval(opts.stride)
+        padding = eval(opts.padding)
+        pooling = eval(opts.pooling)
+        activation_function = supported_activate[opts.activation_function]
+        cnn_param['batch_norm'] = opts.batch_norm
+        cnn_param['activate_function'] = activation_function
+        cnn_param["layer"] = []
+        
+        for layer in range(opts.layers):
+            layer_param = [channel[layer], kernel_size[layer], stride[layer], padding[layer]]
+            if pooling is not None:
+                layer_param.append(pooling[layer])
+            else:
+                layer_param.append(None)
+            cnn_param["layer"].append(layer_param)
+
+        model = CTC_Model(add_cnn=add_cnn, cnn_param=cnn_param, rnn_param=rnn_param, num_class=num_class, drop_out=drop_out, opts=opts)
+        model = model.to(device)
+
     num_params = 0
     for name, param in model.named_parameters():
         num_params += param.numel()
@@ -160,12 +185,14 @@ def main(conf):
                 'feature_type':opts.feature_type, 'n_feats': opts.feature_dim }
     print(params)
     
-    loss_fn = nn.CTCLoss(reduction='sum')
+    #loss_fn = nn.CTCLoss(reduction='sum')
+    print(opts.loss, type(opts.loss))
+    loss_fn = eval(opts.loss)(opts)
     optimizer = torch.optim.Adam(model.parameters(), lr=init_lr, weight_decay=weight_decay)
     
     #visualization for training
-    from visdom import Visdom
-    viz = Visdom()
+    #from visdom import Visdom
+    #viz = Visdom()
     if add_cnn:
         title = opts.feature_type + str(opts.feature_dim) + ' CNN_LSTM_CTC'
     else:

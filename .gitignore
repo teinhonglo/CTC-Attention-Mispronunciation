@@ -1,0 +1,12 @@
+
+*/core
+*/*/data
+*/downloads
+*/*/exp
+models
+archives
+*__pycache__*
+checkpoint
+result
+*pyc
+checkpoint

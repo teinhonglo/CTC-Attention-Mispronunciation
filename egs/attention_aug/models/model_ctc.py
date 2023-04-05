@@ -9,6 +9,9 @@ import torch.nn.functional as F
 from collections import OrderedDict
 import numpy as np
 
+np.random.seed(1234)
+torch.random.manual_seed(1234)
+
 
 __author__ = "Ruchao Fan"
 
@@ -44,17 +47,12 @@ class LayerCNN(nn.Module):
     def __init__(self, in_channel, out_channel, kernel_size, stride, padding, pooling_size=None, 
                         activation_function=nn.ReLU, batch_norm=True, dropout=0.1):
         super(LayerCNN, self).__init__()
-        if len(kernel_size) == 2:
-            self.conv = nn.Conv2d(in_channel, out_channel, kernel_size=kernel_size, stride=stride, padding=padding)
-            self.batch_norm = nn.BatchNorm2d(out_channel) if batch_norm else None
-        else:
-            self.conv = nn.Conv1d(in_channel, out_channel, kernel_size=kernel_size, stride=stride, padding=padding)
-            self.batch_norm = nn.BatchNorm1d(out_channel) if batch_norm else None
+        self.conv = nn.Conv2d(in_channel, out_channel, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.batch_norm = nn.BatchNorm2d(out_channel) if batch_norm else None
         self.activation = activation_function(inplace=True)
-        if pooling_size is not None and len(kernel_size) == 2:
+
+        if pooling_size is not None:
             self.pooling = nn.MaxPool2d(pooling_size)
-        elif len(kernel_size) == 1:
-            self.pooling = nn.MaxPool1d(pooling_size)
         else:
             self.pooling = None
         self.dropout = nn.Dropout(p=dropout)
@@ -70,7 +68,7 @@ class LayerCNN(nn.Module):
         return x
 
 class CTC_Model(nn.Module):
-    def __init__(self, add_cnn=False, cnn_param=None, rnn_param=None, num_class=39, drop_out=0.1):
+    def __init__(self, add_cnn=False, cnn_param=None, rnn_param=None, num_class=39, drop_out=0.1, opts=None):
         """
         add_cnn   [bool]:  whether add cnn in the model
         cnn_param [dict]:  cnn parameters, only support Conv2d i.e.
@@ -91,33 +89,28 @@ class CTC_Model(nn.Module):
         self.num_directions = 2 if rnn_param["bidirectional"] else 1
         self.drop_out = drop_out
         
-        if add_cnn:
-            cnns = []
-            activation = cnn_param["activate_function"]
-            batch_norm = cnn_param["batch_norm"]
-            rnn_input_size = rnn_param["rnn_input_size"]
-            cnn_layers = cnn_param["layer"]
-            for n in range(len(cnn_layers)):
-                in_channel = cnn_layers[n][0][0]
-                out_channel = cnn_layers[n][0][1]
-                kernel_size = cnn_layers[n][1]
-                stride = cnn_layers[n][2]
-                padding = cnn_layers[n][3]
-                pooling_size = cnn_layers[n][4]
-                
-                cnn = LayerCNN(in_channel, out_channel, kernel_size, stride, padding, pooling_size, 
-                                activation_function=activation, batch_norm=batch_norm, dropout=drop_out)
-                cnns.append(('%d' % n, cnn))
-               
-                try:
-                    rnn_input_size = int(math.floor((rnn_input_size+2*padding[1]-kernel_size[1])/stride[1])+1)
-                except:
-                    #if using 1-d Conv
-                    rnn_input_size = rnn_input_size
-            self.conv = nn.Sequential(OrderedDict(cnns))
-            rnn_input_size *= out_channel
-        else:
-            rnn_input_size = rnn_param["rnn_input_size"]
+        cnns = []
+        activation = cnn_param["activate_function"]
+        batch_norm = cnn_param["batch_norm"]
+        rnn_input_size = rnn_param["rnn_input_size"]
+        cnn_layers = cnn_param["layer"]
+
+        for n in range(len(cnn_layers)):
+            in_channel = cnn_layers[n][0][0]
+            out_channel = cnn_layers[n][0][1]
+            kernel_size = cnn_layers[n][1]
+            stride = cnn_layers[n][2]
+            padding = cnn_layers[n][3]
+            pooling_size = cnn_layers[n][4]
+            
+            cnn = LayerCNN(in_channel, out_channel, kernel_size, stride, padding, pooling_size, 
+                            activation_function=activation, batch_norm=batch_norm, dropout=drop_out)
+            cnns.append(('%d' % n, cnn))
+            
+            rnn_input_size = int(math.floor((rnn_input_size+2*padding[1]-kernel_size[1])/stride[1])+1)            
+
+        self.conv = nn.Sequential(OrderedDict(cnns))
+        rnn_input_size *= out_channel
         
         rnns = []
         rnn_hidden_size = rnn_param["rnn_hidden_size"]
@@ -135,81 +128,75 @@ class CTC_Model(nn.Module):
         self.rnns = nn.Sequential(OrderedDict(rnns))
         
         ## Character_embedding
-        self.embeds = nn.Embedding(42, 512)
-        self.lstm_embeds = nn.LSTM(512, rnn_hidden_size, batch_first=True,bidirectional = True)
-        self.score = nn.Linear(rnn_hidden_size*2, rnn_hidden_size*2, bias=False)
+        self.embeds = nn.Embedding(opts.phone_num, opts.char_embed_size)
+        self.lstm_embeds = nn.LSTM(opts.char_embed_size, rnn_hidden_size, batch_first=True, bidirectional=True)
+        self.score = nn.Linear(self.num_directions * rnn_hidden_size, self.num_directions * rnn_hidden_size, bias=False)
 
         if batch_norm:
-            self.fc = nn.Sequential(nn.BatchNorm1d(self.num_directions*rnn_hidden_size*2),
-                                nn.Linear(self.num_directions*rnn_hidden_size*2, num_class, bias=False),)
+            self.fc = nn.Sequential(nn.BatchNorm1d(self.num_directions*rnn_hidden_size),
+                                nn.Linear(self.num_directions*rnn_hidden_size * 2, num_class, bias=False),)
         else:
-            self.fc = nn.Linear(self.num_directions*rnn_hidden_size*2, num_class, bias=False)
+            self.fc = nn.Linear(self.num_directions*rnn_hidden_size * 2, num_class, bias=False)
         self.log_softmax = nn.LogSoftmax(dim=-1)
     
-    def forward(self, x, x1, visualize=False):
+    def forward(self, x, x1):
         """
-        x: audio
+        x: audio:
         x1: sentence
         """
-        #x: batch_size * 1 * max_seq_length * feat_size
-        if visualize:
-            visual = [x]
+        # x: batch_size * max_seq_length * feat_size
+        # torch.Size([64, 452, 243])
+        x = self.conv(x.unsqueeze(1))
+        # torch.Size([64, 32, 226, 61])
         
-        if self.add_cnn:
-            x = self.conv(x.unsqueeze(1))
-            
-            if visualize:
-                visual.append(x)
-            
-            x = x.transpose(1, 2).contiguous()
-            sizes = x.size()
-            if len(sizes) > 3:
-                x = x.view(sizes[0], sizes[1], sizes[2]*sizes[3])
-            
-            x = x.transpose(0,1).contiguous()
+        x = x.transpose(1, 2).contiguous()
+        # torch.Size([64, 226, 32, 61])
+        sizes = x.size()
+        x = x.view(sizes[0], sizes[1], sizes[2]*sizes[3])
+        # torch.Size([64, 226, 1952])
+        x = x.transpose(0,1).contiguous()
+        # torch.Size([226, 64, 1952])
 
-            if visualize:
-                visual.append(x)
+        x = self.rnns(x)
+        # torch.Size([226, 64, 768])
+        x = x.transpose(0,1)
+        # torch.Size([64, 226, 768])
+        
+        x1 = self.embeds(x1)
 
-            x = self.rnns(x)
-            x = x.transpose(0,1)
-            
-            x1 = self.embeds(x1)
+        # [batch,Char_num,Hidden_unit]
+        # value
+        # torch.Size([64, 67, 768])
+        x1 , _ = self.lstm_embeds(x1)
+        
+        # key
+        # torch.Size([64, 67, 768])
+        key = self.score(x1)
+         
+        attn_score = torch.bmm(x, key.transpose(1, 2))
+        attn_max, _ = torch.max(attn_score, dim=-1, keepdim=True) 
+        exp_score = torch.exp(attn_score - attn_max)
 
-            # [batch,Char_num,Hidden_unit]
-            # value
-            x1 , _ = self.lstm_embeds(x1)
-            #x1 = self.score(x1)
-            
-            # key
-            key = self.score(x1)
-            
-            attn_score = torch.bmm(x, key.transpose(1, 2))
-            attn_max, _ = torch.max(attn_score, dim=-1, keepdim=True) 
-            exp_score = torch.exp(attn_score - attn_max)
+        attn_weights = exp_score
+        weights_denom = torch.sum(attn_weights, dim=-1, keepdim=True)   
+        attn_weights = attn_weights / (weights_denom + 1e-30)
+        c = torch.bmm(attn_weights, x1)
+        
+        # query and context concat
+        out1 = torch.cat((x, c), -1)
+        #out1 = x + c
+        # out1: torch.Size([64, 226, 1536])
+        x = out1.transpose(0,1).contiguous()
+        # torch.Size([226, 64, 1536])
 
-            attn_weights = exp_score
-            weights_denom = torch.sum(attn_weights, dim=-1, keepdim=True)   
-            attn_weights = attn_weights / (weights_denom + 1e-30)
-            c = torch.bmm(attn_weights, x1)
-            
-            # query and context concat
-            out1 = torch.cat((x, c), -1)
-            x = out1.transpose(0,1).contiguous()
-            
-            
-            seq_len, batch, _ = x.size()
-            x = x.view(seq_len*batch, -1)
-            x = self.fc(x)
-            x = x.view(seq_len, batch, -1)
-            out = self.log_softmax(x)
-            
-            if visualize:
-                visual.append(out)
-                return out, visual
-            return out
-        else:
-            print("error")
+        seq_len, batch, _ = x.size()
+        x = x.view(seq_len * batch, -1)
+        x = self.fc(x)
+        x = x.view(seq_len, batch, -1)
+        out = self.log_softmax(x)
+
+        return out
+        
   
     def compute_wer(self, index, input_sizes, targets, target_sizes):
         batch_errs = 0

@@ -17,9 +17,17 @@ from steps.train_ctc import Config
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--conf', help='conf file for training')
+parser.add_argument('--affix', default="")
+
+def add_affix(origin_path, affix):
+    info = origin_path.split("/")
+    info[-2] += affix
+    new_path = "/".join(info)
+    return new_path
 
 def test():
     args = parser.parse_args()
+    affix = args.affix
     try:
         conf = yaml.safe_load(open(args.conf,'r'))
     except:
@@ -52,10 +60,14 @@ def test():
     vocab_file = opts.vocab_file
     
     vocab = Vocab(vocab_file)
-    test_dataset = SpeechDataset(vocab, opts.test_scp_path, opts.test_lab_path,opts.test_trans_path, opts)
+    opts.test_wavscp_path = add_affix(opts.test_wavscp_path, affix)
+    opts.test_scp_path = add_affix(opts.test_scp_path, affix)
+    opts.test_lab_path = add_affix(opts.test_lab_path, affix)
+    opts.test_trans_path = add_affix(opts.test_trans_path, affix)
+    test_dataset = SpeechDataset(vocab, opts.test_wavscp_path, opts.test_scp_path, opts.test_lab_path, opts.test_trans_path, opts)
     test_loader = SpeechDataLoader(test_dataset, batch_size=opts.batch_size, shuffle=False, num_workers=opts.num_workers, pin_memory=False)
     
-    model = CTC_Model(rnn_param=rnn_param, add_cnn=add_cnn, cnn_param=cnn_param, num_class=num_class, drop_out=drop_out)
+    model = CTC_Model(rnn_param=rnn_param, add_cnn=add_cnn, cnn_param=cnn_param, num_class=num_class, drop_out=drop_out, opts=opts)
     model.to(device)
     model.load_state_dict(package['state_dict'])
     model.eval()
@@ -65,9 +77,10 @@ def test():
         decoder  = GreedyDecoder(vocab.index2word, space_idx=-1, blank_index=0)
     else:
         decoder = BeamDecoder(vocab.index2word, beam_width=beam_width, blank_index=0, space_idx=-1, lm_path=opts.lm_path, lm_alpha=opts.lm_alpha) 
-        
-    w1 = open("decode_seq",'w+')
-    w2 = open("human_seq",'w+') 
+
+    save_dir = os.path.join(opts.checkpoint_dir, opts.exp_name)    
+    w1 = open(save_dir + "/decode_seq" + affix,'w+')
+    w2 = open(save_dir + "/human_seq" + affix,'w+') 
     total_wer = 0
     total_cer = 0
     start = time.time()

@@ -200,7 +200,7 @@ recall = TP/(TP+FN)
 precision = TP/(TP+FP)
 print("Recall: %.4f" %(TP/(TP+FN)))
 print("Precision: %.4f" %(TP/(TP+FP)))
-print("f1:%.4f" % ( 2*precision*recall/(recall+precision)  ))
+print("f1: %.4f" % ( 2*precision*recall/(recall+precision)  ))
 
 print("TA: %.4f %d" %(cor_cor/(cor_cor+cor_nocor), cor_cor))
 print("FR: %.4f %d" %(cor_nocor/(cor_cor+cor_nocor), cor_nocor))

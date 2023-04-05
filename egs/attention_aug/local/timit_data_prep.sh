@@ -21,7 +21,7 @@ fi
 train_dir=train
 test_dir=test
 
-ls -d "$1"/*/dr*/* | sed -e "s:^.*/::" > $conf_dir/train_timit_spk.list
+ls -d "$1"/*/DR*/* | sed -e "s:^.*/::" > $conf_dir/train_timit_spk.list
 
 tmpdir=`pwd`/tmp
 mkdir -p $tmpdir $prepare_dir

@@ -27,6 +27,13 @@ w2 = open(tmp_path+"/wav_sph.scp",'w+')
 w3 = open(tmp_path+"/phn_text",'w+')
 w4 = open(tmp_path+"/transcript_phn_text",'w+')
 
+common_arctic = "data/common.arctic"
+common_dict = {}
+
+with open(common_arctic, "r") as fn:
+    for i, line in enumerate(fn.readlines()):
+        line = line.split()[0]
+        common_dict[line] = i
 
 def del_repeat_sil(phn_lst):
     tmp = [phn_lst[0]]
@@ -46,6 +53,11 @@ for phn_path in wav_lst:
     wav_path = re.sub("TextGrid","wav",tmp)
     tmp = re.sub("annotation","transcript",phn_path)
     text_path = re.sub("TextGrid","txt",tmp)
+    arctic_id = "_".join(utt_id.split("_")[1:])
+    
+    if arctic_id in common_dict:
+        continue
+    
     if(spk_id in eval(type_[-1]+"_spk") ):
         cur_phns = []
         transcript_phns = []
